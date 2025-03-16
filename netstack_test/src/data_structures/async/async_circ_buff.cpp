@@ -9,12 +9,16 @@ int ac_buff_init(ac_buff_t* buff, void* ext_dat)
 	int ret = thrd_error;
 	if (!_ac_buff_valid(buff)) return ret;
 	
-	mtx_destroy(&buff->mtx);
+	mtx_destroy(&buff->bmtx);
+	mtx_destroy(&buff->wmtx);
+	mtx_destroy(&buff->rmtx);
 
 	buff->init = 0;
 	buff->rptr = 0;
 	buff->wptr = 0;
-	mtx_init(&buff->mtx, mtx_plain);
+	if (mtx_init(&buff->bmtx, mtx_plain) == thrd_error) return thrd_error;
+	if (mtx_init(&buff->wmtx, mtx_plain) == thrd_error) return thrd_error;
+	if (mtx_init(&buff->rmtx, mtx_plain) == thrd_error) return thrd_error;
 	
 	ret = buff->binit(buff, ext_dat);
 	if (!buff->init) buff->init = 1;
@@ -24,12 +28,13 @@ int ac_buff_init(ac_buff_t* buff, void* ext_dat)
 
 int ac_buff_rproc(ac_buff_t* buff, size_t* size, char* dst, void* ext_dat)
 {
+	int res = 0;
 	int success = thrd_busy;
 	if (!_ac_buff_valid(buff)) return thrd_error;
 
 	while (success == thrd_busy)
 	{
-		mtx_lock(&buff->mtx);
+		mtx_lock(&buff->rmtx);
 		
 		// --<Shared Region>--
 		if (_ac_buff_rready(buff))
@@ -39,7 +44,7 @@ int ac_buff_rproc(ac_buff_t* buff, size_t* size, char* dst, void* ext_dat)
 		}
 		// --<Shared Region>--
 
-		mtx_unlock(&buff->mtx);
+		mtx_unlock(&buff->rmtx);
 	}
 
 	return success;
@@ -52,7 +57,7 @@ int ac_buff_wproc(ac_buff_t* buff, size_t* size, char* src, void* ext_dat)
 
 	while (success == thrd_busy)
 	{
-		mtx_lock(&buff->mtx);
+		mtx_lock(&buff->wmtx);
 
 		// --<Shared Region>--
 		if (_ac_buff_wready(buff))
@@ -62,7 +67,7 @@ int ac_buff_wproc(ac_buff_t* buff, size_t* size, char* src, void* ext_dat)
 		}
 		// --<Shared Region>--
 
-		mtx_unlock(&buff->mtx);
+		mtx_unlock(&buff->wmtx);
 	}
 
 	return success;
@@ -78,7 +83,9 @@ int ac_buff_close(ac_buff_t* buff, void* ext_dat)
 	buff->init = 0;
 	buff->rptr = 0;
 	buff->wptr = 0;
-	mtx_destroy(&buff->mtx);
+	mtx_destroy(&buff->bmtx);
+	mtx_destroy(&buff->wmtx);
+	mtx_destroy(&buff->rmtx);
 
 	return ret;
 }
@@ -95,13 +102,25 @@ int _ac_buff_valid(ac_buff_t* buff)
 
 int _ac_buff_rready(ac_buff_t* buff)
 {
-	return buff->rptr == buff->wptr;
+	int res = 0;
+
+	if (mtx_lock(&buff->bmtx) == thrd_error) return thrd_error;
+	res = buff->rptr == buff->wptr;
+	mtx_unlock(&buff->bmtx);
+
+	return res;
 }
 
 int _ac_buff_wready(ac_buff_t* buff)
 {
-	if (buff->rptr == 0 && buff->wptr == buff->size - 1) return 0;
-	return (buff->wptr != buff->rptr - 1);
+	int res = 1;
+
+	if (mtx_lock(&buff->bmtx) == thrd_error) return thrd_error;
+	if (buff->rptr == 0 && buff->wptr == buff->size - 1) res = 0;
+	if (res) res = buff->wptr != buff->rptr - 1;
+	mtx_unlock(&buff->bmtx);
+
+	return res;
 }
 
 // --------<Character Buffer Implementation>--------
